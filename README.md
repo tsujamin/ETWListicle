@@ -9,6 +9,16 @@ ETWListicle.exe notepad.exe
 
 ![](./imgs/output.png)
 
+If you are seeing a lot of symbols with offsets in your output, this may be due symbol loading failures.
+
+![](./imgs/output-symbol-failure.png)
+
+The cause of these failures may be:
+  - Your `_NT_SYMBOL_PATH` environmental variable is not set correctly. 
+    Consider setting it to a value such as `srv*C:\symbolcache\*https://msdl.microsoft.com/download/symbols`.
+  - Either `dbhhlp.dll` or `symsrv.dll` cannot be loaded.
+    Consider copying these two DLLs into the same directory as `ETWListical.exe`.
+
 ## Code Breakdown
 > Note that this section may exclude error checks just to keep things simple
 
@@ -338,7 +348,7 @@ VOID FetchUserEntries(HANDLE hProcess, PRTL_BALANCED_NODE node) {
 
 The function reads the process memory at the given node address from the remote process using `ReadProcessMemory()` into an `ETW_USER_REG_ENTRY` struct. We call `DumpNodeInfo()` to dump the details of the struct(more on that later). Finally, we recursively call the function, but this time with the Child nodes of the Red-Black Tree. We do this till we reach an invalid node, thereby iterating through the entire list of registered entries. 
 
-### DumpNodeInfo() and Guid2Name()
+### DumpNodeInfo(), Guid2Name() and PrintSymbolName()
 
 This function is responsible for dumping the information stored in the `ETW_USER_REG_ENTRY` structures.
 
@@ -347,10 +357,6 @@ This function is responsible for dumping the information stored in the `ETW_USER
 // Print Individual Nodes
 VOID DumpNodeInfo(HANDLE hProcess, PRTL_BALANCED_NODE node, PETW_USER_REG_ENTRY uRegEntry) {
     OLECHAR guid[40];
-    CHAR cbFile[MAX_PATH] = { 0 };
-    CHAR ctxFile[MAX_PATH] = { 0 };
-    BYTE buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(CHAR)] = {0};
-    PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
 
     // Increase Provider Count
     PROVIDER_COUNT++;
@@ -360,28 +366,14 @@ VOID DumpNodeInfo(HANDLE hProcess, PRTL_BALANCED_NODE node, PETW_USER_REG_ENTRY 
     wprintf(L"[%03d] Provider GUID:\t\t%s (%s)\n", PROVIDER_COUNT, guid, Guid2Name(guid));
 
     // Callback function executed in response to NtControlTrace
-    if (GetMappedFileNameA(hProcess, (LPVOID)uRegEntry->Callback, cbFile, MAX_PATH) != 0) {
-        (void)PathStripPathA(cbFile);
-        printf("[%03d] Callback Function:\t0x%p :: %s", PROVIDER_COUNT, uRegEntry->Callback, cbFile);
-        pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-        pSymbol->MaxNameLen = MAX_SYM_NAME;
-        if(SymFromAddr(hProcess, (ULONG_PTR)uRegEntry->Callback, NULL, pSymbol)) {
-            printf("!%hs", pSymbol->Name);
-        }
-        printf("\n");
-    }
+    printf("[%03d] Callback Function:\t0x%p", PROVIDER_COUNT, uRegEntry->Callback);
+    PrintSymbolName(hProcess, (LPVOID)uRegEntry->Callback, " :: ");
+    printf("\n");
 
     // Get Context
-    if (GetMappedFileNameA(hProcess, (LPVOID)uRegEntry->CallbackContext, ctxFile, MAX_PATH) != 0) {
-        (void)PathStripPathA(ctxFile);
-        printf("[%03d] Callback Context:\t\t0x%p :: %s", PROVIDER_COUNT, uRegEntry->CallbackContext, ctxFile);
-        pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-        pSymbol->MaxNameLen = MAX_SYM_NAME;
-        if (SymFromAddr(hProcess, (ULONG_PTR)uRegEntry->CallbackContext, NULL, pSymbol)) {
-            printf("!%hs", pSymbol->Name);
-        }
-        printf("\n");
-    }
+    printf("[%03d] Callback Context:\t\t0x%p", PROVIDER_COUNT, uRegEntry->CallbackContext);
+    PrintSymbolName(hProcess, (LPVOID)uRegEntry->Callback, " :: ");
+    printf("\n");
 
     // Registration Handle to be used with EtwEventUnregister
     printf("[%03d] Registration Handle:\t0x%p\n", PROVIDER_COUNT, (PVOID)((ULONG64)node | (ULONG64)uRegEntry->RegIndex << 48));
@@ -392,8 +384,7 @@ VOID DumpNodeInfo(HANDLE hProcess, PRTL_BALANCED_NODE node, PETW_USER_REG_ENTRY 
     // Used to communicate with the kernel via NtTraceEvent
     printf("[%03d] ReplyHandle:\t\t0x%p\n", PROVIDER_COUNT, (PVOID)uRegEntry->ReplyHandle);
          
-    printf("\n");
-}
+    print
 ```
 
 It's a very simple function that prints the entries of the `ETW_USER_REG_ENTRY` structure. For the most part, it is very self-explanatory with it printing the respective struct fields while updating the global `PROVIDER_COUNT` variable which essentially keeps track of how many providers the process is subscribed to. 
@@ -409,19 +400,33 @@ We use the `StringFromGUID2()` function to convert the `ProviderId` field of the
 
 The second code segment from the function I wanted to discuss is:
 ```c
-if (GetMappedFileNameA(hProcess, (LPVOID)uRegEntry->Callback, cbFile, MAX_PATH) != 0) {
-    (void)PathStripPathA(cbFile);
-    printf("[%03d] Callback Function:\t0x%p :: %s", PROVIDER_COUNT, uRegEntry->Callback, cbFile);
+VOID PrintSymbolName(HANDLE hProcess, LPVOID address, CHAR* prefix)
+{
+    CHAR cbFile[MAX_PATH] = { 0 };
+    BYTE buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(CHAR)] = {0};
+    PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
+    DWORD64 symDisp = 0;
+
     pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
     pSymbol->MaxNameLen = MAX_SYM_NAME;
-    if(SymFromAddr(hProcess, (ULONG_PTR)uRegEntry->Callback, NULL, pSymbol)) {
-        printf("!%hs", pSymbol->Name);
+
+    if (GetMappedFileNameA(hProcess, address, cbFile, MAX_PATH) != 0) {
+        (void)PathStripPathA(cbFile);
+        printf("%s%s", prefix, cbFile);
+        if (SymFromAddr(hProcess, (DWORD64)address, &symDisp, pSymbol)) {
+            printf("!%hs", pSymbol->Name);
+
+            if (symDisp != 0) {
+                printf("+0x%llx", symDisp);
+            }
+        }
     }
-    printf("\n");
 }
 ```
 
 Here, we check if we can resolve the name for the memory-mapped file, and if we can, we strip the filename and then use `SymFromAddr()` to retrieve symbol information for the specified address.
+
+In cases where there is not an exact symbol returned, the displacement (in bytes) from the previous nearest symbol is output.
 
 Coming back to `Guid2Name()`:
 ```c

@@ -136,14 +136,32 @@ BSTR Guid2Name(OLECHAR* id) {
     return hr == S_OK ? name : L"Unknown";
 }
 
+VOID PrintSymbolName(HANDLE hProcess, LPVOID address, CHAR* prefix)
+{
+    CHAR cbFile[MAX_PATH] = { 0 };
+    BYTE buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(CHAR)] = {0};
+    PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
+    DWORD64 symDisp = 0;
+
+    pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+    pSymbol->MaxNameLen = MAX_SYM_NAME;
+
+    if (GetMappedFileNameA(hProcess, address, cbFile, MAX_PATH) != 0) {
+        (void)PathStripPathA(cbFile);
+        printf("%s%s", prefix, cbFile);
+        if (SymFromAddr(hProcess, (DWORD64)address, &symDisp, pSymbol)) {
+            printf("!%hs", pSymbol->Name);
+
+            if (symDisp != 0) {
+                printf("+0x%llx", symDisp);
+            }
+        }
+    }
+}
+
 // Print Individual Nodes
 VOID DumpNodeInfo(HANDLE hProcess, PRTL_BALANCED_NODE node, PETW_USER_REG_ENTRY uRegEntry) {
     OLECHAR guid[40];
-    CHAR cbFile[MAX_PATH] = { 0 };
-    CHAR ctxFile[MAX_PATH] = { 0 };
-    BYTE buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(CHAR)] = {0};
-    PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
-
 
     // Increase Provider Count
     PROVIDER_COUNT++;
@@ -153,28 +171,14 @@ VOID DumpNodeInfo(HANDLE hProcess, PRTL_BALANCED_NODE node, PETW_USER_REG_ENTRY 
     wprintf(L"[%03d] Provider GUID:\t\t%s (%s)\n", PROVIDER_COUNT, guid, Guid2Name(guid));
 
     // Callback function executed in response to NtControlTrace
-    if (GetMappedFileNameA(hProcess, (LPVOID)uRegEntry->Callback, cbFile, MAX_PATH) != 0) {
-        (void)PathStripPathA(cbFile);
-        printf("[%03d] Callback Function:\t0x%p :: %s", PROVIDER_COUNT, uRegEntry->Callback, cbFile);
-        pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-        pSymbol->MaxNameLen = MAX_SYM_NAME;
-        if(SymFromAddr(hProcess, (ULONG_PTR)uRegEntry->Callback, NULL, pSymbol)) {
-            printf("!%hs", pSymbol->Name);
-        }
-        printf("\n");
-    }
+    printf("[%03d] Callback Function:\t0x%p", PROVIDER_COUNT, uRegEntry->Callback);
+    PrintSymbolName(hProcess, (LPVOID)uRegEntry->Callback, " :: ");
+    printf("\n");
 
     // Get Context
-    if (GetMappedFileNameA(hProcess, (LPVOID)uRegEntry->CallbackContext, ctxFile, MAX_PATH) != 0) {
-        (void)PathStripPathA(ctxFile);
-        printf("[%03d] Callback Context:\t\t0x%p :: %s", PROVIDER_COUNT, uRegEntry->CallbackContext, ctxFile);
-        pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-        pSymbol->MaxNameLen = MAX_SYM_NAME;
-        if (SymFromAddr(hProcess, (ULONG_PTR)uRegEntry->CallbackContext, NULL, pSymbol)) {
-            printf("!%hs", pSymbol->Name);
-        }
-        printf("\n");
-    }
+    printf("[%03d] Callback Context:\t\t0x%p", PROVIDER_COUNT, uRegEntry->CallbackContext);
+    PrintSymbolName(hProcess, (LPVOID)uRegEntry->Callback, " :: ");
+    printf("\n");
 
     // Registration Handle to be used with EtwEventUnregister
     printf("[%03d] Registration Handle:\t0x%p\n", PROVIDER_COUNT, (PVOID)((ULONG64)node | (ULONG64)uRegEntry->RegIndex << 48));
