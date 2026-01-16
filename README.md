@@ -403,12 +403,15 @@ The second code segment from the function I wanted to discuss is:
 VOID PrintSymbolName(HANDLE hProcess, LPVOID address, CHAR* prefix)
 {
     CHAR cbFile[MAX_PATH] = { 0 };
-    BYTE buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(CHAR)] = {0};
-    PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
+    BYTE symBuffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(CHAR)] = {0};
+    PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)symBuffer;
+    IMAGEHLP_LINE64 line = { 0xff };
     DWORD64 symDisp = 0;
+    DWORD lineDisp = 0;
 
     pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
     pSymbol->MaxNameLen = MAX_SYM_NAME;
+    line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
 
     if (GetMappedFileNameA(hProcess, address, cbFile, MAX_PATH) != 0) {
         (void)PathStripPathA(cbFile);
@@ -420,12 +423,20 @@ VOID PrintSymbolName(HANDLE hProcess, LPVOID address, CHAR* prefix)
                 printf("+0x%llx", symDisp);
             }
         }
+
+        if (SymGetLineFromAddr64(hProcess, (DWORD64)address, &lineDisp, &line)) {
+            printf(" (%s:%d", line.FileName, line.LineNumber);
+
+            if (lineDisp != 0) {
+                printf("+0x%lx", lineDisp);
+            }
+            printf(")");
+        }
     }
 }
 ```
 
-Here, we check if we can resolve the name for the memory-mapped file, and if we can, we strip the filename and then use `SymFromAddr()` to retrieve symbol information for the specified address.
-
+Here, we check if we can resolve the name for the memory-mapped file, and if we can, we strip the filename and then use `SymFromAddr()` to retrieve symbol information for the specified address, and `SymGetLineFromAddr64()` to retrieve the line in original source code where the symbol was defined (if available).
 In cases where there is not an exact symbol returned, the displacement (in bytes) from the previous nearest symbol is output.
 
 Coming back to `Guid2Name()`:

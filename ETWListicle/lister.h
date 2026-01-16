@@ -139,12 +139,15 @@ BSTR Guid2Name(OLECHAR* id) {
 VOID PrintSymbolName(HANDLE hProcess, LPVOID address, CHAR* prefix)
 {
     CHAR cbFile[MAX_PATH] = { 0 };
-    BYTE buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(CHAR)] = {0};
-    PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
+    BYTE symBuffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(CHAR)] = {0};
+    PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)symBuffer;
+    IMAGEHLP_LINE64 line = { 0xff };
     DWORD64 symDisp = 0;
+    DWORD lineDisp = 0;
 
     pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
     pSymbol->MaxNameLen = MAX_SYM_NAME;
+    line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
 
     if (GetMappedFileNameA(hProcess, address, cbFile, MAX_PATH) != 0) {
         (void)PathStripPathA(cbFile);
@@ -155,6 +158,15 @@ VOID PrintSymbolName(HANDLE hProcess, LPVOID address, CHAR* prefix)
             if (symDisp != 0) {
                 printf("+0x%llx", symDisp);
             }
+        }
+
+        if (SymGetLineFromAddr64(hProcess, (DWORD64)address, &lineDisp, &line)) {
+            printf(" (%s:%d", line.FileName, line.LineNumber);
+
+            if (lineDisp != 0) {
+                printf("+0x%lx", lineDisp);
+            }
+            printf(")");
         }
     }
 }
@@ -249,7 +261,7 @@ BOOL ParseRegistrationTable(DWORD pid) {
     }
 
     // Load symbols when a reference is made requiring the symbols be loaded.
-    (void)SymSetOptions(SYMOPT_DEFERRED_LOADS);
+    (void)SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
 
     // Initializes the symbol handler for a process.
     if (!SymInitialize(hProcess, NULL, TRUE)) {
